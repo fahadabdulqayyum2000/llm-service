@@ -15,9 +15,16 @@ from langchain_chroma import Chroma
 DEFAULT_PERSIST_DIR = "data/chroma"
 DEFAULT_COLLECTION = "kb1"  # must be 3+ chars
 
+_embeddings = None
 
 def get_embeddings():
-    return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    global _embeddings
+    if _embeddings is None:
+        _embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    return _embeddings
+
+# def get_embeddings():
+#     return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
 
 def get_vectorstore(persist_dir: str = DEFAULT_PERSIST_DIR, collection: str = DEFAULT_COLLECTION) -> Chroma:
