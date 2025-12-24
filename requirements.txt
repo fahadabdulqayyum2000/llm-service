@@ -9,4 +9,6 @@ langchain-community
 langchain-text-splitters
 
 chromadb
-sentence-transformers
+# sentence-transformers
+langchain-huggingface
+langchain-chroma
