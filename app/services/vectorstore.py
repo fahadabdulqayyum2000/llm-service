@@ -1,14 +1,15 @@
+
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import List
 import logging
 
 from langchain_community.document_loaders import TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma
+
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -17,30 +18,72 @@ DEFAULT_COLLECTION = "kb1"
 
 _embeddings = None
 
+
 def get_embeddings():
+    """
+    Get embeddings with multiple fallback options:
+    1. Cohere (if COHERE_API_KEY is set) - Recommended for production
+    2. OpenAI (if OPENAI_API_KEY is set) - Alternative
+    3. HuggingFace (local fallback) - Development only
+    """
     global _embeddings
     if _embeddings is None:
-        logger.info("Initializing embeddings model...")
         
-        # Set cache directory
-        cache_dir = os.environ.get('TRANSFORMERS_CACHE', '/app/.cache')
+        # Try Cohere first (best for production)
+        if settings.COHERE_API_KEY:
+            logger.info("Initializing Cohere embeddings...")
+            try:
+                from langchain_cohere import CohereEmbeddings
+                
+                _embeddings = CohereEmbeddings(
+                    model="embed-english-light-v3.0",
+                    cohere_api_key=settings.COHERE_API_KEY
+                )
+                logger.info("✅ Cohere embeddings initialized successfully")
+                return _embeddings
+                
+            except Exception as e:
+                logger.error(f"❌ Cohere initialization failed: {e}")
+        
+        # Try OpenAI second
+        if settings.OPENAI_API_KEY:
+            logger.info("Initializing OpenAI embeddings...")
+            try:
+                from langchain_openai import OpenAIEmbeddings
+                
+                _embeddings = OpenAIEmbeddings(
+                    model="text-embedding-3-small",
+                    openai_api_key=settings.OPENAI_API_KEY
+                )
+                logger.info("✅ OpenAI embeddings initialized successfully")
+                return _embeddings
+                
+            except Exception as e:
+                logger.error(f"❌ OpenAI initialization failed: {e}")
+        
+        # Fallback to HuggingFace (local only - will fail on Koyeb)
+        logger.warning("⚠️  No API keys found. Using HuggingFace embeddings (local only)...")
+        logger.warning("⚠️  This may fail on Koyeb. Set COHERE_API_KEY or OPENAI_API_KEY for production.")
         
         try:
+            from langchain_huggingface import HuggingFaceEmbeddings
+            
             _embeddings = HuggingFaceEmbeddings(
-                model_name="sentence-transformers/all-MiniLM-L6-v2",
-                model_kwargs={
-                    'device': 'cpu',
-                },
-                encode_kwargs={
-                    'normalize_embeddings': True,
-                    'batch_size': 32
-                },
-                cache_folder=cache_dir
+                model_name="sentence-transformers/paraphrase-MiniLM-L3-v2",
+                model_kwargs={'device': 'cpu'},
+                encode_kwargs={'normalize_embeddings': True}
             )
-            logger.info("Embeddings model loaded successfully from cache")
+            logger.info("✅ HuggingFace embeddings initialized successfully")
+            return _embeddings
+            
         except Exception as e:
-            logger.error(f"Failed to load embeddings: {e}")
-            raise
+            logger.error(f"❌ All embedding methods failed: {e}")
+            raise RuntimeError(
+                "Failed to initialize embeddings. Please set one of:\n"
+                "  - COHERE_API_KEY (recommended for production)\n"
+                "  - OPENAI_API_KEY (alternative)\n"
+                "  - Ensure HuggingFace models can download (local development only)"
+            )
     
     return _embeddings
 
@@ -61,17 +104,22 @@ def load_documents_from_folder(folder: str) -> List:
     """Load all .txt documents from a folder."""
     docs = []
     base = Path(folder)
+    
     if not base.exists():
-        logger.warning(f"Folder {folder} does not exist")
+        logger.warning(f"📁 Folder {folder} does not exist")
         return docs
 
-    for path in base.rglob("*.txt"):
+    txt_files = list(base.rglob("*.txt"))
+    logger.info(f"📁 Found {len(txt_files)} .txt files in {folder}")
+
+    for path in txt_files:
         try:
             docs.extend(TextLoader(str(path), encoding="utf-8").load())
-            logger.info(f"Loaded document: {path}")
+            logger.info(f"✅ Loaded: {path.name}")
         except Exception as e:
-            logger.error(f"Failed to load {path}: {e}")
+            logger.error(f"❌ Failed to load {path.name}: {e}")
 
+    logger.info(f"📄 Total documents loaded: {len(docs)}")
     return docs
 
 
@@ -83,9 +131,11 @@ def build_or_update_index(
     chunk_overlap: int = 120,
 ) -> int:
     """Build or update the vector index from documents."""
+    logger.info(f"🔨 Building index from folder: {docs_folder}")
+    
     docs = load_documents_from_folder(docs_folder)
     if not docs:
-        logger.warning("No documents found to index")
+        logger.warning("⚠️  No documents found to index")
         return 0
 
     splitter = RecursiveCharacterTextSplitter(
@@ -93,14 +143,15 @@ def build_or_update_index(
         chunk_overlap=chunk_overlap,
     )
     chunks = splitter.split_documents(docs)
-    logger.info(f"Split into {len(chunks)} chunks")
+    logger.info(f"✂️  Split into {len(chunks)} chunks")
 
     vs = get_vectorstore(persist_dir=persist_dir, collection=collection)
     vs.add_documents(chunks)
     vs.persist()
     
-    logger.info(f"Indexed {len(chunks)} chunks successfully")
+    logger.info(f"✅ Successfully indexed {len(chunks)} chunks")
     return len(chunks)
+
 
 
 # # app/services/vectorstore.py
